@@ -11,7 +11,7 @@ import json, time, torch
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 MODEL = "mistralai/Mistral-7B-Instruct-v0.2"
 TARGET_LAYERS = [8, 16, 24]
 OUT_PT = BASE / "activations_ffn_600.pt"
@@ -21,7 +21,7 @@ device = "cuda" if torch.cuda.is_available() else (
     "mps" if torch.backends.mps.is_available() else "cpu")
 print(f"[INFO] device={device}")
 
-with open(BASE / "queries_600.json") as f:
+with open(BASE / "data" / "queries_600.json") as f:
     data = json.load(f)
 queries = data["queries"]
 domains = data["domains"]

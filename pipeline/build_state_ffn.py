@@ -20,10 +20,10 @@ from sklearn.decomposition import SparsePCA, PCA
 from sklearn.metrics import silhouette_score
 
 import sys
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "utils"))
 from differentiable_kmeans import DifferentiableKMeans
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 ACTS_PT = BASE / "activations_ffn_600.pt"
 INFO_JSON = BASE / "ffn_600_info.json"
 OUT_PT = BASE / "shadow_live_state_ffn.pt"

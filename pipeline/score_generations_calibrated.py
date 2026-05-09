@@ -37,8 +37,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import log_loss
 from sklearn.model_selection import train_test_split
 
-BASE = Path(__file__).parent
-QUERIES_JSON = BASE / "queries_600.json"
+BASE = Path(__file__).parent.parent
+QUERIES_JSON = BASE / "data" / "queries_600.json"
 PHASE_C_JSON = BASE / "brev_live_results" / "phaseC_ablation.json"
 OUT_JSON = BASE / "brev_live_results" / "phaseC_calibrated_scores.json"
 OUT_TXT = BASE / "brev_live_results" / "phaseC_calibrated_summary.txt"

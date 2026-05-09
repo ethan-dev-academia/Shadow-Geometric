@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 ACTS_PT = BASE / "activations_ffn_600.pt"
 INFO_JSON = BASE / "ffn_600_info.json"
 STATE_PT = BASE / "shadow_live_state_ffn.pt"

@@ -29,7 +29,7 @@ import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 STATE_PATH = BASE / "shadow_live_state.pt"
 OUT_DIR = BASE / "brev_live_results"
 OUT_DIR.mkdir(exist_ok=True)

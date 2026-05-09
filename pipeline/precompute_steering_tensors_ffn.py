@@ -51,7 +51,7 @@ import numpy as np
 import torch
 from scipy.sparse.linalg import eigsh, LinearOperator
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 ACTS_PT = BASE / "activations_ffn_600.pt"
 STATE_PT = BASE / "shadow_live_state_ffn.pt"
 INFO_JSON = BASE / "ffn_600_info.json"

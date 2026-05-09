@@ -37,7 +37,7 @@ from sklearn.calibration import calibration_curve
 import torch.nn as nn
 import torch.nn.functional as F
 
-BASE = Path(__file__).parent
+BASE = Path(__file__).parent.parent
 OUT = BASE / "shadow_v3_output" / "n600_ffn"
 OUT.mkdir(parents=True, exist_ok=True)
 

@@ -55,13 +55,17 @@ python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # 2. Run the full pipeline (Brev H100 recommended)
-python collect_ffn_600.py                                                # ~5 min
-python build_state_ffn.py                                                # ~12 min (Sparse PCA dominates)
-python precompute_steering_tensors_ffn.py                                # ~10 sec
-python run_pipeline_ffn.py                                               # ~30 sec
-python brev_live_steering.py --phase C \
+python pipeline/collect_ffn_600.py                                       # ~5 min
+python pipeline/build_state_ffn.py                                       # ~12 min (Sparse PCA dominates)
+python pipeline/precompute_steering_tensors_ffn.py                       # ~10 sec
+python pipeline/run_pipeline_ffn.py                                      # ~30 sec
+python pipeline/brev_live_steering.py --phase C \
     --state-file shadow_live_state_ffn.pt --inject-target mlp           # ~18 min
-python score_generations_calibrated.py                                   # ~10 sec
+python pipeline/score_generations_calibrated.py                          # ~10 sec
+
+# Or run everything at once:
+bash run_pipeline.sh        # Linux / Brev
+.\run_pipeline.ps1          # Windows
 ```
 
 Outputs land in:
@@ -99,7 +103,7 @@ Adaptive-$k$ via silhouette sweep is therefore mandatory; fixed small-$k$ settin
 
 ## Limitations
 
-See `paper_workshop.tex` §7 for the full list. Highlights:
+See `docs/paper_workshop.tex` §7 for the full list. Highlights:
 - Single Brev H100 run, single seed (42).
 - $\arg\max$ flipping not achieved at $\alpha \in \{1,3,5\}$; F2 is on continuous calibrated probabilities.
 - Single architecture (Mistral-7B); cross-architecture replication on Llama / Qwen is left for follow-up.
