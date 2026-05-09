@@ -1,0 +1,23 @@
+# Activations and state artifacts (regenerable; too large for git)
+*.pt
+*.npz
+*.joblib
+
+# Pipeline outputs
+shadow_v3_output/
+brev_live_results/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

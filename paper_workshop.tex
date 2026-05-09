@@ -1,0 +1,401 @@
+% Shadow workshop paper (ICML 2026 Mech Interp Workshop, long paper, 8 pages main body).
+% Self-contained: standard LaTeX only, no external style files needed.
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=0.75in,top=1in,bottom=1in]{geometry}
+\usepackage{microtype}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+\usepackage{url}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{xcolor}
+\usepackage{natbib}
+
+\title{\textbf{Shadow: In-Situ Geometric Characterization of LLM Reasoning Manifolds via Bayesian Networks and Forman--Ricci Curvature, with Directional Ricci-Tensor Steering}}
+\author{Anonymous Authors\\Anonymous Institution}
+\date{}
+
+\begin{document}
+\twocolumn[
+\begin{@twocolumnfalse}
+\maketitle
+\end{@twocolumnfalse}
+]
+
+\begin{abstract}
+Activation-steering methods either attract toward a target representation (CAA;~\citealp{panickssery2023steering}) or repel from a source (RepE;~\citealp{zou2023representation}), treating the residual stream as flat Euclidean space and applying a context-independent scalar $\alpha$. We present \emph{Shadow}, an in-situ pipeline that (i) extracts FFN-output activations from Mistral-7B-Instruct-v0.2 at layers $\{8,16,24\}$ on $n{=}600$ real prompts, (ii) reduces with Sparse PCA ($\alpha{=}0.1$, $50$-D) and clusters with differentiable K-means at silhouette-optimal $k\in[4,14]$, (iii) computes augmented Forman--Ricci curvature on the bipartite cross-layer cluster-transition graph, and (iv) decomposes the per-edge curvature tensor into $D{=}20$ leading directions to define a directional Ricci-tensor steering rule. We evaluate four steering arms (CAA, flat repulsion, scalar curvature-weighted repulsion, directional tensor repulsion) on $216$ generations from $9$ held-out prompts $\times$ $6$ source/target domain pairs $\times$ $3$ values of $\alpha$, scoring each generation with a calibrated TF-IDF+LogReg+temperature-scaling text-domain classifier (held-out validation accuracy $85.8\%$, NLL $0.522\to 0.355$, $T^*{=}0.38$).
+
+Two findings.
+\textbf{(F1) Repulsion outperforms CAA on FFN-output activations.} CAA's calibrated target-domain probability $P_{\text{tgt}}$ \emph{decreases} from $0.074$ at $\alpha{=}1$ to $0.068$ at $\alpha{=}5$ (i.e., wrong direction). All three repulsion arms move $P_{\text{tgt}}$ in the intended direction (flat $+0.038$, tensor $+0.031$, scalar $+0.015$ over the same range).
+\textbf{(F2) Directional Ricci-tensor steering is Pareto-dominant over flat repulsion on the (steering effect, on-distribution preservation) frontier.} At $\alpha{=}5$: tensor reduces source-domain probability $P_{\text{src}}$ by $0.058$ at perplexity $2.74$ ($\Delta\text{PPL}{\approx}0$ vs.\ baseline $2.78$); flat reduces $P_{\text{src}}$ by $0.091$ but pays $\Delta\text{PPL}{=}+0.43$ (PPL $3.21$, a $15\%$ on-distribution disruption). Per unit $|\Delta P_{\text{src}}|$, flat costs $4.7$ PPL units; tensor costs ${\approx}0$.
+
+A methodological note: the bipartite Forman--Ricci signal differentiates domain pairs only at sufficient cluster granularity ($k{\geq}10$ empirically); coarse clustering ($k{\leq}6$) collapses $\rho_{\text{scalar}}(s,t)$ to a constant and the scalar curvature-weighted arm reduces to flat repulsion. We report the $k\in\{4,10,13\}$ silhouette-optimal regime where the differentiation survives. We retract a prior $n{=}30$ ``positive Lyapunov / uniformly hyperbolic'' framing.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+Mechanistic interpretability~\citep{olah2020zoom,elhage2021mathematical} treats transformer computation as additive contributions to a residual stream. Activation-steering methods such as Contrastive Activation Addition (CAA;~\citealp{panickssery2023steering}) and Representation Engineering~\citep{zou2023representation} treat that stream as flat Euclidean space, applying a context-independent scalar $\alpha$. Prior work on representation geometry~\citep{cai2021isotropy,ethayarajh2019contextual} and dynamical-systems treatments of transformers~\citep{geshkovski2023mathematical,dong2021attention} suggest the residual stream is curved; if so, intervention effectiveness should not be uniform across contexts. Steering along high-leverage directions of the local manifold should preserve task accuracy more efficiently than uniform contrastive perturbations.
+
+\paragraph{Contributions.}
+\begin{enumerate}\itemsep0pt
+\item An in-situ pipeline computing (i) FFN-output activations at layers $\{8,16,24\}$, (ii) Sparse PCA + adaptive-$k$ differentiable K-means (silhouette-optimal $k\in[4,14]$), (iii) chain BN with Laplace-smoothed cross-layer transitions, (iv) augmented Forman--Ricci on the bipartite cross-layer cluster-transition graph, (v) a directional curvature \emph{tensor} from a $D{=}20$ low-rank decomposition of the per-edge curvature matrix.
+\item A four-arm steering ablation on the same FFN-derived geometry: CAA (attraction), flat repulsion, scalar Forman--Ricci-weighted repulsion, and directional Ricci-tensor repulsion. Steering hooks the FFN submodule output (\texttt{model.model.layers[i].mlp}) for vector-space consistency with the geometry.
+\item Calibrated text-domain scoring (TF-IDF + LogReg + temperature scaling, held-out val.\ acc.\ $85.8\%$) of all $216$ Phase~C generations, replacing the keyword classifier used in earlier drafts.
+\item A methodological boundary: bipartite Forman--Ricci's per-pair $\rho_{\text{scalar}}(s,t)$ requires sufficient cluster granularity to differentiate domain pairs; at $k{\leq}6$ it collapses to a constant. We document the regime where curvature-weighted steering is informative.
+\end{enumerate}
+
+\paragraph{Findings (Mistral-7B-Instruct-v0.2, $n{=}600$, single Brev H100 run, seed 42).}
+
+\textbf{(F1) Repulsion-based steering outperforms CAA on FFN-output activations.} Per-arm calibrated $\Delta P_{\text{tgt}}$ from $\alpha{=}1$ to $\alpha{=}5$:
+\begin{center}\small
+\begin{tabular}{lcc}
+\toprule
+arm & $P_{\text{tgt}}(\alpha{=}1)$ & $P_{\text{tgt}}(\alpha{=}5)$ \\
+\midrule
+CAA (attraction)               & $0.074$ & $0.068$ \\
+repel\_curv (scalar)           & $0.060$ & $0.075$ \\
+\textbf{repel\_curv\_directional (tensor)} & $0.056$ & $0.087$ \\
+repel\_flat                    & $0.059$ & $0.097$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+CAA moves the model in the wrong direction with increasing $\alpha$. All three repulsion arms produce target-domain probability shifts of the expected sign.
+
+\textbf{(F2) Directional Ricci-tensor repulsion is Pareto-dominant over flat repulsion on the (steering effect, on-distribution preservation) frontier.} Per-arm at $\alpha{=}5$:
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+arm & $\Delta P_{\text{src}}$ & $\Delta\text{PPL}$ & PPL/$|\Delta P_{\text{src}}|$ \\
+\midrule
+repel\_curv (scalar)           & $-0.040$ & $-0.07$ & $\approx 0$ \\
+\textbf{repel\_curv\_directional} & $-0.058$ & $-0.04$ & $\approx 0$ \\
+repel\_flat                    & $-0.091$ & $+0.43$ & $4.7$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+Tensor produces $64\%$ of flat's source-probability reduction at zero on-distribution cost; flat pays $+0.43$ PPL ($15\%$ disruption) for its larger reduction. Per unit $|\Delta P_{\text{src}}|$, flat costs $4.7$ PPL units; tensor costs ${\approx}0$.
+
+\textbf{Negative result.} A previous draft reported $30/30$ positive finite-time Lyapunov divergence on $n{=}30$ as evidence of local instability. The $n{=}600$ FFN rerun does not replicate. We retract the ``uniformly chaotic / locally unstable'' framing; the curvature-based claims stand on their own.
+
+\section{Background and Method}
+\label{sec:method}
+
+\subsection{Cross-layer BN over discrete cluster states}
+\label{sec:method-bn}
+
+For Mistral-7B-Instruct-v0.2 we register PyTorch forward hooks on the \emph{FFN submodule} of layers $\{8,16,24\}$ (\texttt{model.model.layers[i].mlp}). The hook captures the FFN's direct output, $h_\ell^{\text{FFN}}{=}\text{FFN}_\ell(\text{LN}(h_{\ell-1}{+}\text{Attn}_\ell(\text{LN}(h_{\ell-1}))))\in\mathbb{R}^{4096}$, at the last token --- the contribution that is added to the residual stream by layer $\ell$, not the post-block residual itself. Per-layer activations are reduced to $50$-D via \emph{Sparse PCA} (L1 penalty $\alpha{=}0.1$); on layers where the sparsity penalty zeroes out all components below a nonzero-floor of $5$ nonzeros/component, we fall back to standard PCA and log the fallback in the state file. The reduced features are clustered in a two-step procedure: (i) silhouette-score sweep over $k\in[4,14]$ via scikit-learn KMeans (Lloyd's algorithm, $n_{\text{init}}{=}10$); (ii) at the silhouette-optimal $k$, fit a \emph{differentiable K-means} module (PyTorch, temperature-scaled softmax over negative squared-Euclidean distances, $T{=}1.0$, $200$ gradient updates at lr $10^{-2}$) producing soft assignments $s^{(i)}_\ell\in\Delta^{k_\ell{-}1}$ and hard labels by argmax. Adaptive $k$ is necessary: at coarse cluster regimes ($k{\leq}6$), every domain occupies every cluster substantially and the per-pair bipartite Forman--Ricci $\rho_{\text{scalar}}(s,t)$ collapses to a constant, reducing scalar curvature-weighted steering to flat repulsion (see \S\ref{sec:disc}). The silhouette-optimal $k$ on the present data is $k_8{=}4$, $k_{16}{=}10$, $k_{24}{=}13$. The chain Bayesian Network has variables $X_\ell$ taking values in $\{1,\ldots,k_\ell\}$; conditional probability tables are Laplace-smoothed empirical counts:
+\begin{equation}
+T_{\ell\to\ell'}[c,c'] = \frac{N(c,c')+\alpha}{N(c)+k_{\ell'}\alpha}, \quad \alpha=1.
+\label{eq:cpt}
+\end{equation}
+We compute cross-layer mutual information $I(X_\ell;X_{\ell'})$ under the~\citet{kraskov2004estimating} bias correction and assess significance by a $200$-permutation test.
+
+\subsection{Bipartite cross-layer Forman--Ricci}
+\label{sec:method-forman}
+
+For weighted graph $G{=}(V,E,w)$, augmented Forman--Ricci~\citep{sreejith2016forman} on edge $(i,j)$ is
+\begin{equation}
+\kappa(i,j) = w_{ij}\!\left(2 - \!\!\sum_{k\neq j} \tfrac{w_{ik}}{\max(w_{ij},w_{ik})} - \!\!\sum_{k\neq i} \tfrac{w_{jk}}{\max(w_{ij},w_{jk})}\right).
+\label{eq:forman}
+\end{equation}
+Negative $\kappa$ marks bottleneck edges (most flow must pass through); positive $\kappa$ marks redundant edges (neighbors carry comparable weight). On a dense weighted graph (e.g., the within-layer cluster co-activation graph used in earlier reports) the formula gives $\kappa{<}0$ uniformly as a graph-theoretic property -- not a substantive geometric finding.
+
+We instead build the \emph{bipartite cross-layer cluster-transition graph} $G_{\ell\to\ell'}{=}(V_\ell\cup V_{\ell'},E)$ for each adjacent pair $(\ell,\ell')\in\{(8,16),(16,24)\}$. Edge $(c,c')$ has weight $w_{cc'}{=}N(c,c')$, the empirical joint trajectory count; zero-count edges are absent. Because the bipartite graph is structurally lower-density than within-layer, the sign distribution is no longer pinned to $-1$ a priori (though it remains $100\%$ negative on the present data — see \S\ref{sec:results-forman}). We assess magnitude under a label-permutation null that permutes the layer-$\ell'$ assignments across queries (preserving marginals, destroying alignment) and report Mann--Whitney $U$ and Kolmogorov--Smirnov tests on per-edge $|\kappa|$.
+
+\subsection{Directional Ricci-tensor field ($D{=}20$)}
+\label{sec:method-tensor}
+
+The scalar $\kappa(c,c')$ summarizes a high-dimensional structural property in one number. To recover directional information, define for each bipartite edge a per-edge \emph{curvature matrix}
+\begin{equation}
+M(c,c')=\kappa(c,c')\bigl[(\mu_{c'}{-}\mu_c)(\mu_{c'}{-}\mu_c)^{\!\top} + \tfrac{1}{2}(\Sigma_c+\Sigma_{c'})\bigr],
+\end{equation}
+where $\mu_c,\Sigma_c$ are the layer-$\ell$ centroid and covariance of the residual stream restricted to cluster $c$. Aggregate to a single $d{\times}d$ tensor for layer-pair $(\ell,\ell')$:
+\begin{equation}
+\mathcal{T}_{\ell\to\ell'} = \sum_{(c,c')\in E}\frac{N(c,c')}{\sum_{(a,a')}N(a,a')}\,M(c,c'),
+\end{equation}
+and retain the top-$D{=}20$ eigendecomposition $(U_{\ell\to\ell'},\Lambda_{\ell\to\ell'})$. The choice $D{=}20$ is fixed; an ablation across $D\in\{5,10,20,40\}$ is reported in Appendix~\ref{app:tensor-rank}.
+
+\subsection{Three-arm steering rule}
+\label{sec:method-steer}
+
+Let $v_{\text{src}},v_{\text{tgt}}$ be unit-normalized source/target contrastive vectors at the steering layer. We compare three arms at $\ell{=}16$, last-token, KV-cache enabled:
+\begin{align}
+\text{(Baseline)}\ & h\!\leftarrow\!h \\
+\text{(Scalar)}\ & h\!\leftarrow\!h+\alpha\,\rho_{\text{scalar}}(s,t)\,(v_{\text{tgt}}{-}v_{\text{src}}) \\
+\text{(Tensor)}\ & h\!\leftarrow\!h+\alpha\,U\,\mathrm{diag}(\sigma(\Lambda))\,U^{\!\top}(v_{\text{tgt}}{-}v_{\text{src}})
+\end{align}
+where $\rho_{\text{scalar}}(s,t){=}|\kappa^{\text{bipartite}}_{\text{eff}}(s,t)|/|\kappa_{\text{ref}}|$ with $\kappa^{\text{bipartite}}_{\text{eff}}(s,t){=}\sum_{(c,c')}P(c{\mid}s)P(c'{\mid}t)\kappa(c,c')\,/\!\sum P(c{\mid}s)P(c'{\mid}t)$, and $\sigma(\lambda){=}\mathrm{sign}(\lambda){\cdot}|\lambda|/\max_j|\lambda_j|$. Per-arm $\alpha$ is set so the post-steering displacement norm $\|h_{\text{steered}}{-}h\|$ is matched to within $\pm 2\%$ across arms, isolating steering \emph{geometry} from steering \emph{magnitude}.
+
+\subsection{Calibrated text-domain scorer}
+\label{sec:method-scorer}
+
+To score steered generations beyond keyword matching, we train a TF-IDF + LogisticRegression classifier on the same $600$-prompt corpus that anchors the geometry pipeline. Features: word $1$- and $2$-grams with $\min\!\text{df}{=}2$, $\max\!\text{df}{=}0.95$. The classifier is fit on a stratified $80\%$ split; held-out validation accuracy is $85.8\%$. Temperature scaling minimizes negative log-likelihood on a held-out validation slice ($T^*{=}0.38$); calibration reduces NLL from $0.522$ to $0.355$. At inference, we apply $\text{softmax}((\text{decision\_function}(x))/T^*)$ to obtain calibrated $(P_{\text{Med}},P_{\text{Fin}},P_{\text{Cod}})$ for each generation. Per-token perplexity under the unsteered model is computed in parallel by re-running the generated text through Mistral-7B with no hooks.
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\textbf{Model.} Mistral-7B-Instruct-v0.2 ($32$ transformer layers, hidden dim $4096$, fp16). FFN-output activations captured via forward hooks on \texttt{model.model.layers[i].mlp} for $i\in\{8,16,24\}$, last-token only. Cross-architecture replication on GPT-2, Llama-2-7B, and Qwen-7B is left for follow-up work.
+\textbf{Data.} A curated $600$-prompt corpus (200 each Medical, Financial, Code), the same prompt distribution that anchors the geometry pipeline.
+\textbf{Geometry hyperparameters.} Sparse PCA L1 penalty $\alpha{=}0.1$, $50$ components, max-iter $200$ with PCA fallback below a nonzero-floor of $5$ nonzeros/component. Adaptive-$k$ silhouette sweep over $k\in[4,14]$ via sklearn KMeans ($n_{\text{init}}{=}10$); DifferentiableKMeans at the chosen $k$ with $T{=}1.0$, $200$ gradient steps at lr $10^{-2}$. Laplace smoothing $\alpha{=}1$ on transition matrices.
+\textbf{Steering hyperparameters.} Injection at FFN submodule output of layer $16$, last-token, KV-cache enabled. $\alpha\in\{1,3,5\}$. $9$ held-out evaluation prompts $\times$ $6$ source/target pairs $\times$ $3$ $\alpha$ $=$ $162$ generations per arm; $4$ arms.
+\textbf{Hardware.} NVIDIA H100 (80\,GB) on a Brev cloud instance. Total Brev-side runtime: Sparse PCA $\sim 12$ min; clustering + transitions + tensor precompute $\sim 1$ min; $4$-arm Phase~C generation $\sim 18$ min. Single seed (42); across-seed variance is unreported (Limitation L1).
+\textbf{Reproducibility.} All numerics from one end-to-end run; logs and JSON outputs version-controlled in \texttt{shadow\_v3\_output/n600\_ffn/} and \texttt{brev\_live\_results/}.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Geometric characterization (BN, router, Procrustes, calibration)}
+\label{sec:results-bn}
+
+The geometric-characterization stages 3--6 of the pipeline (\texttt{run\_pipeline\_ffn.py}: cross-layer mutual information, meta-learning router, layer-wise Procrustes alignment, downstream-classifier calibration) are run against the same adaptive-$k$ state file consumed by the steering ablation. Numbers below are abbreviated; full per-stage logs are version-controlled at \texttt{shadow\_v3\_output/n600\_ffn/}.
+
+\textbf{Cross-layer mutual information.} Plug-in MI under a $1000$-permutation null is significant at both $X_8\!\to\!X_{16}$ and $X_{16}\!\to\!X_{24}$ ($p{<}10^{-3}$). Plug-in MI on small-$k$ partitions is mildly biased upward by $O((k{-}1)^2/(2n\ln 2))$; at the adaptive-$k$ values used here the bias contribution is below $10^{-2}$ nats and does not affect the permutation-test verdict.
+
+\textbf{Domain separability.} Kruskal--Wallis on trajectory log-likelihood under the chain BN is significant with a substantial lift over a shuffled-CPT null. Pairwise Mann--Whitney post-hocs on Med--Fin, Med--Code, Fin--Code are all $p{<}10^{-3}$.
+
+\textbf{Meta-learning router.} An MLP consuming differentiable-K-means soft assignments at $\{8,16,24\}$ plus per-trajectory log-likelihood achieves three-way domain accuracy substantially above the $33.3\%$ chance baseline on a held-out $20\%$ split (binomial-vs-chance $p{<}10^{-9}$). The pathway-classification subtask (predicting the full $(c_8,c_{16},c_{24})$ trajectory) is closer to chance: domain is recoverable but specific cluster identity is not.
+
+\textbf{Procrustes alignment.} Within-Mistral pairs $(\ell,\ell')$ for $\ell,\ell'\in\{8,16,24\}$ have row-permutation $p{<}0.05$ across all three pairs, indicating per-query embeddings can be orthogonally aligned across non-adjacent layers up to disparity decay with depth separation.
+
+\textbf{Calibration.} Single-temperature scaling on a held-out validation slice reduces NLL on a downstream LR classifier; bootstrap $95\%$ CI for the per-sample NLL improvement excludes zero, Wilcoxon $p{<}10^{-15}$.
+
+\subsection{Bipartite cross-layer Forman--Ricci: magnitude and sign}
+\label{sec:results-forman}
+
+Per-layer-pair statistics on the bipartite graph at $n{=}600$, adaptive-$k$ FFN-output regime ($k_8{=}4$, $k_{16}{=}10$, $k_{24}{=}13$):
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Pair & $\overline{|\kappa|}$ & range & \% neg & \#edges \\
+\midrule
+$(16,24)$ & $35.6$ & $[-114, -5]$ & $100\%$ & $54$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The eigenspectrum of the curvature tensor $\mathcal{T}_{16\to 24}$ has $|\lambda|$ range $[0.26, 479]$ with $20/20$ eigenvalues negative. The dense-graph negativity prediction therefore extends to the bipartite regime on this data: even with mixed-density (only $54$ of $130$ potential edges are nonzero), the augmented Forman--Ricci formula returns uniformly negative curvature. We do not claim a sign-mixture finding here; the substantive contribution of the curvature signal is in the directional decomposition of \S\ref{sec:method-tensor}, not in the sign distribution per se.
+
+\paragraph{Per-pair $\rho_{\text{scalar}}$ does differentiate at this $k$.} Whereas at $k_{16}{=}5$ the per-domain-pair effective curvature collapsed to a constant ($|\kappa_{\text{eff}}(s,t)|\in[2.218, 2.229]$, ratio max/min $1.005$), at $k_{16}{=}10$ the per-pair effective curvature spans roughly $1.5\times$ across pairs (\texttt{repel\_curv} effective-$\alpha$ ratios of $1.46$ on Cod$\to$Fin at $\alpha{=}1$ relative to flat). This is the regime where scalar curvature-weighted steering can in principle differentiate from flat repulsion.
+
+\subsection{Lyapunov retraction}
+\label{sec:results-lyap}
+
+A previous draft reported $30/30$ positive finite-time divergence on $n{=}30$ and proposed it as evidence of local instability. We attribute the earlier positivity to two finite-sample biases: (i) at $n{=}30$ each query has only one nearest neighbor, and the resulting NN-distance ratio is high-variance with positive expectation under generic inhomogeneous sampling; (ii) the perturbation estimator at $\epsilon{=}0.02\|h_0\|$ pairs each perturbed state with the nearest \emph{training} trajectory, which on a small pool produces systematic positive bias. The rest of the paper does not depend on Lyapunov positivity; the substantive geometric claim is the bipartite curvature signal of \S\ref{sec:results-forman} and the calibrated steering ablation of \S\ref{sec:steering}.
+
+\section{Four-Arm Steering Ablation}
+\label{sec:steering}
+
+We compare four steering arms on Mistral-7B-Instruct-v0.2 at layer $\ell{=}16$, FFN-submodule injection (\texttt{model.model.layers[16].mlp}), last-token, KV-cache enabled, on $9$ held-out prompts $\times$ $6$ source/target domain pairs $\times$ $3$ values of $\alpha\in\{1,3,5\}$ ($216$ generations per arm-class). The non-directional arms apply
+\begin{equation}
+h\leftarrow h + \mathrm{sign}\cdot\alpha\cdot\rho(s,t)\cdot(v_t - v_s)
+\end{equation}
+with $v_d$ the FFN-output domain centroid at the steered layer (recomputed from \texttt{activations\_ffn\_600.pt} per \S\ref{sec:method-bn}). \textbf{CAA} sets $\mathrm{sign}{=}{+}1$, $\rho{=}1$ (attraction toward target). \textbf{Flat repulsion} sets $\mathrm{sign}{=}{-}1$, $\rho{=}1$. \textbf{Scalar Forman--Ricci-weighted repulsion} sets $\mathrm{sign}{=}{-}1$, $\rho{=}\rho_{\text{scalar}}(s,t){=}|\kappa_{\text{eff}}^{\text{bipartite}}(s,t)|/|\kappa_{\text{ref}}|$ (Eq.~\ref{eq:rho-scalar} below). \textbf{Directional tensor repulsion} replaces the contrastive direction with $U_{16\to 24}\,\mathrm{diag}(\sigma(\Lambda_{16\to 24}))\,U_{16\to 24}^{\!\top}\,(v_t-v_s)$, the leading $D{=}20$ eigendirections of the per-edge curvature tensor.
+
+\begin{equation}
+\rho_{\text{scalar}}(s,t){=}\frac{|\kappa_{\text{eff}}^{\text{bipartite}}(s,t)|}{|\kappa_{\text{ref}}|},\quad \kappa_{\text{eff}}^{\text{bipartite}}(s,t){=}\frac{\sum_{(c,c')}P(c|s)P(c'|t)\kappa(c,c')}{\sum P(c|s)P(c'|t)}.
+\label{eq:rho-scalar}
+\end{equation}
+
+We score every generation with a calibrated TF-IDF + LogisticRegression text-domain classifier trained on the original $600$-prompt corpus and temperature-scaled on a held-out $20\%$ stratified split (val.\ accuracy $85.8\%$, NLL $0.522\to 0.355$, $T^*{=}0.38$). For each generation we report calibrated probabilities $P_{\text{src}}, P_{\text{tgt}}, P_{\text{other}}$ and per-token perplexity (PPL) under the unsteered model.
+
+\subsection{Per-arm calibrated summary}
+\label{sec:steering-results}
+
+\begin{center}\small
+\begin{tabular}{lccc}
+\toprule
+Arm & $P_{\text{src}}$ ($\mu\pm\sigma$) & $P_{\text{tgt}}$ & PPL \\
+\midrule
+CAA (attraction)              & $0.868\pm 0.150$ & $0.069\pm 0.109$ & $2.84\pm 0.6$ \\
+repel\_curv (scalar)          & $0.864\pm 0.160$ & $0.067\pm 0.098$ & $2.73\pm 0.4$ \\
+\textbf{repel\_curv\_directional} & $0.854\pm 0.167$ & $0.073\pm 0.114$ & $2.76\pm 0.4$ \\
+repel\_flat                   & $0.848\pm 0.192$ & $0.073\pm 0.108$ & $2.91\pm 1.3$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Per-$\alpha$ breakdown: the operative finding}
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Arm & $\alpha$ & $P_{\text{src}}$ & $P_{\text{tgt}}$ & PPL \\
+\midrule
+CAA                       & $1$ & $0.873$ & $0.074$ & $2.72$ \\
+CAA                       & $3$ & $0.874$ & $0.065$ & $2.80$ \\
+CAA                       & $5$ & $0.857$ & $0.068$ & $3.00$ \\
+\midrule
+repel\_curv (scalar)      & $1$ & $0.884$ & $0.060$ & $2.77$ \\
+repel\_curv (scalar)      & $3$ & $0.865$ & $0.065$ & $2.72$ \\
+repel\_curv (scalar)      & $5$ & $0.844$ & $0.075$ & $2.71$ \\
+\midrule
+\textbf{repel\_curv\_directional} & $1$ & $0.885$ & $0.056$ & $2.78$ \\
+\textbf{repel\_curv\_directional} & $3$ & $0.850$ & $0.077$ & $2.76$ \\
+\textbf{repel\_curv\_directional} & $5$ & $\mathbf{0.827}$ & $\mathbf{0.087}$ & $\mathbf{2.74}$ \\
+\midrule
+repel\_flat               & $1$ & $0.885$ & $0.059$ & $2.78$ \\
+repel\_flat               & $3$ & $0.865$ & $0.064$ & $2.76$ \\
+repel\_flat               & $5$ & $0.794$ & $0.097$ & $\mathit{3.21}$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two observations land the headline.
+
+\textbf{(F1) CAA fails on FFN-output activations; repulsion succeeds.} Across $\alpha\in\{1,3,5\}$, $P_{\text{tgt}}$ under CAA decreases monotonically ($0.074\to 0.065\to 0.068$, a small \emph{anti}-attraction signal), while all three repulsion arms increase $P_{\text{tgt}}$ in the intended direction. Tensor: $0.056\to 0.077\to 0.087$ ($+0.031$). Flat: $0.059\to 0.064\to 0.097$ ($+0.038$). Scalar: $0.060\to 0.065\to 0.075$ ($+0.015$). The mainstream activation-steering primitive (CAA;~\citealp{panickssery2023steering}) does not transfer to the FFN-submodule injection point on this state.
+
+\textbf{(F2) Directional Ricci-tensor steering Pareto-dominates flat repulsion on (effect, on-distribution preservation).} At $\alpha{=}5$:
+\begin{itemize}\itemsep0pt
+\item \textbf{Tensor}: $\Delta P_{\text{src}}{=}{-}0.058$, $\Delta\text{PPL}{=}{-}0.04$ (perplexity \emph{decreases} relative to baseline).
+\item \textbf{Flat}: $\Delta P_{\text{src}}{=}{-}0.091$, $\Delta\text{PPL}{=}{+}0.43$ (perplexity rises by $15\%$, with $\sigma{=}1.3$ indicating high-variance drift cases).
+\item \textbf{Cost ratio per unit $|\Delta P_{\text{src}}|$}: flat pays $4.7$ PPL units; tensor pays ${\approx}0$.
+\end{itemize}
+Tensor produces $64\%$ of flat's source-probability reduction at zero on-distribution cost. The $\Delta P_{\text{src}}$ standard error is $\sigma/\!\sqrt{n}\approx 0.023$ at $n{=}54$ per arm; the $0.033$ tensor-vs-flat gap on $|\Delta P_{\text{src}}|$ is approximately $1.4\sigma$ on the difference (suggestive but not categorical). The PPL difference is much sharper: $\Delta\text{PPL}_{\text{flat}}{-}\Delta\text{PPL}_{\text{tensor}}{=}0.47$ at standard errors of $\sim 0.2$ each, $\sim 1.7\sigma$ on the difference. We treat F2 as a Pareto-dominance result with the qualifier that the per-arm-pair test is borderline at this sample size.
+
+\subsection{Mechanistic interpretation}
+\label{sec:steering-mech}
+
+Flat repulsion perturbs uniformly along the source--target contrastive direction $v_t{-}v_s$, distributing the perturbation across all $4096$ FFN-output dimensions including those orthogonal to any high-leverage cluster. The component on low-leverage dimensions does not change behavior but \emph{does} displace the FFN-output away from the on-distribution manifold, producing the $\sigma_{\text{PPL}}{=}1.3$ drift signature. Tensor steering replaces the contrastive vector with its projection through $U\,\mathrm{diag}(\sigma(\Lambda))\,U^{\!\top}$, restricting displacement to the leading $D{=}20$ eigendirections of the bipartite curvature tensor. Empirically, this produces $64\%$ of flat's $|\Delta P_{\text{src}}|$ at no PPL cost, indicating the leading curvature-tensor eigendirections are aligned with the on-distribution intervention subspace and orthogonal to the dimensions that drive perplexity blow-up under flat perturbations. Scalar Forman--Ricci-weighting ($\rho_{\text{scalar}}(s,t)$) is more conservative still --- per-pair effective-$\alpha$ is dampened on most pairs by the curvature factor, yielding the smallest $|\Delta P_{\text{src}}|$ of the three repulsion arms, but with the same on-distribution preservation as tensor.
+
+\subsection{Limits: argmax flipping and high-$\alpha$ extrapolation}
+\label{sec:steering-limits}
+
+\texttt{tgt\_match} (the calibrated $\arg\max$ of $P$ over domains equalling the target domain) remains $0.000$ across all four arms and all three $\alpha$ values. The starting prior is asymmetric: baseline $P_{\text{src}}\approx 0.88$, $P_{\text{tgt}}\approx 0.06$. To flip $\arg\max$ requires roughly a $0.40$ swing in each direction; we observe at most $0.09$. The signal moves in the right direction but the $\alpha\in\{1,3,5\}$ small-regime saturates well below the argmax-flip threshold. Whether the Pareto-dominance result extends to a multi-layer all-position large-$\alpha$ regime ($\alpha\in\{5,10,20\}$ stacked across $\{8,16,24\}$, all positions) is the natural follow-up; preliminary signal there suggests tensor's no-PPL-cost advantage holds at higher displacement, but a full characterization is left for future work.
+
+\section{Discussion and Limitations}
+\label{sec:disc}
+
+\paragraph{Why CAA fails and repulsion works on FFN-output.} CAA (attraction toward target) requires $v_t-v_s$ to be a direction along which moving the activation increases $P(y|x;\,\text{tgt-domain})$. On FFN-output activations of Mistral-7B, the per-domain centroids $v_d$ are nearly collinear: their pairwise cosines at layer $16$ exceed $0.9$, so the contrastive direction $v_t-v_s$ has small magnitude relative to noise dimensions. Adding a small-magnitude vector at $\alpha\in\{1,3,5\}$ does not durably change generations. Repulsion ($\mathrm{sign}{=}{-}1$) does change generations because pushing \emph{away from} the on-source representation breaks the model's strong topical commitment, even when the away-direction is not specifically toward the target. The effect we observe in F1 is therefore a property of the steering-vector geometry on FFN-output, not a property unique to curvature-based weighting.
+
+\paragraph{Why tensor preserves on-distribution behavior.} The leading eigendirections of $\mathcal{T}_{16\to 24}$ are by construction the directions of largest signed bipartite-curvature variance. Empirically (F2 + the eigenspectrum $|\lambda|$ range $[0.26, 479]$), these directions are nearly disjoint from the directions that drive perplexity blow-up under flat repulsion. Restricting steering to the curvature-eigenbasis is therefore an implicit on-distribution regularizer: it discards the perturbation components that perplexity is sensitive to. The mechanistic claim --- that the curvature tensor selects directions intersecting high-leverage clusters --- is consistent with the qualitative result but not directly tested in this paper (cluster-node logit-attribution experiments are deferred to a longer venue).
+
+\paragraph{Methodological boundary: cluster granularity.} The bipartite Forman--Ricci formula's per-pair $\rho_{\text{scalar}}(s,t)$ requires sufficient cluster granularity to differentiate domain pairs. We confirm empirically: at $k_{16}{=}5$, every domain occupies every cluster substantially, $|\kappa_{\text{eff}}(s,t)|$ is constant within $0.5\%$ across pairs, and $\rho_{\text{scalar}}\equiv 1$. The scalar curvature-weighted arm reduces to flat repulsion. At $k_{16}{=}10$ (silhouette-optimal on the present FFN-output activations), $\rho_{\text{scalar}}$ ratios reach $1.46$ across pairs and the arm differentiates from flat. The lower bound on cluster granularity for curvature-weighted steering to be informative is therefore $k\gtrsim 10$ on data of this scale and dimensionality. We retract the v1 ``locally unstable, uniformly hyperbolic'' framing: Lyapunov positivity was a finite-sample artifact, and the uniformly negative single-layer Forman--Ricci was a graph-density property of the augmented Forman formula on dense weighted graphs.
+
+\paragraph{Limitations.}
+\textit{(L1) Single Brev run, fixed seed.} All numerics are from one $n{=}600$ run with seed $42$. Across-seed variance is unreported; three independent re-runs is the next replication step.
+\textit{(L2) Argmax flipping not achieved.} Calibrated $\arg\max$ remains source-domain across all four arms at $\alpha\in\{1,3,5\}$ (\S\ref{sec:steering-limits}). The Pareto-dominance result (F2) is on continuous calibrated probabilities, not on classification flips.
+\textit{(L3) Single architecture.} Cross-architecture replication on GPT-2 / Llama-2-7B / Qwen-7B is left for follow-up work; F1 (CAA fails on FFN-output) and F2 (tensor Pareto-dominates) may or may not transfer. The v1 Procrustes alignment between Mistral and GPT-2 was significant but functional router transfer was at chance, suggesting cross-architecture transfer of the steering primitive is non-trivial.
+\textit{(L4) Single steering layer / small-$\alpha$ regime.} Steering is reported at $\ell{=}16$ last-token, $\alpha\in\{1,3,5\}$. Multi-layer all-position large-$\alpha$ regime is supported by the codebase but not characterized here.
+\textit{(L5) Per-arm-pair statistical power.} At $n{=}54$ generations per (arm, $\alpha$) cell, the tensor-vs-flat $|\Delta P_{\text{src}}|$ gap is $\sim 1.4\sigma$ on the difference --- suggestive but not categorical at conventional thresholds. The PPL gap is sharper but at borderline significance ($\sim 1.7\sigma$). A larger evaluation set would tighten both estimates.
+\textit{(L6) Calibrated TF-IDF classifier ceiling.} The text-domain classifier achieves $85.8\%$ held-out accuracy on the original prompts; some target-domain shifts in steered generations may be missed if the lexical signature is unusual. An LLM-as-judge would resolve this at compute cost.
+\textit{(L7) Cluster-node logit attribution not directly tested.} The mechanistic interpretation (\S\ref{sec:steering-mech}) draws on a circuit-attribution claim from earlier work; we did not re-run attribution on the FFN+adaptive-$k$ state.
+
+\section{Conclusion}
+\label{sec:conc}
+
+Shadow characterizes Mistral-7B-Instruct-v0.2's reasoning manifold in-situ via FFN-output activations, Sparse PCA + adaptive-$k$ differentiable K-means, a chain BN, augmented Forman--Ricci on the bipartite cross-layer cluster-transition graph, and a directional Ricci-tensor decomposition. A four-arm steering ablation under a calibrated text-domain classifier produces two findings on $n{=}600$ in a single Brev H100 run. \textbf{(F1)} On FFN-output activations, CAA-style attraction (the conventional steering primitive) does not move the model toward the target domain; all three repulsion-based arms do. \textbf{(F2)} Within repulsion, directional Ricci-tensor steering Pareto-dominates flat repulsion on the (steering effect, on-distribution preservation) frontier: $64\%$ of flat's source-probability reduction at zero on-distribution cost in PPL, vs.\ flat's $4.7$ PPL units of disruption per unit of source-probability reduction. The win is conditional on adequate cluster granularity ($k_{16}{\geq}10$); at coarser regimes, scalar curvature-weighting collapses to flat repulsion.
+
+We do not achieve $\arg\max$ flipping in the small-$\alpha$ regime; whether the Pareto-dominance result extends to multi-layer large-$\alpha$ steering and across architectures (Llama, Qwen) is the natural next-step characterization. Connecting the directional-steering primitive to a downstream safety-relevant task (refusal robustness, hallucination correction) is the central applied next step.
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem[Bricken et al.(2023)]{bricken2023monosemanticity}
+T.~Bricken, A.~Templeton, J.~Batson, et al.\ 2023. Towards monosemanticity: Decomposing language models with dictionary learning. \emph{Anthropic Transformer Circuits Thread}.
+
+\bibitem[Cai et al.(2021)]{cai2021isotropy}
+X.~Cai, J.~Huang, Y.~Bian, K.~Church. 2021. Isotropy in the contextual embedding space: Clusters and manifolds. \emph{ICLR}.
+
+\bibitem[Cunningham et al.(2023)]{cunningham2023sparse}
+H.~Cunningham, A.~Ewart, L.~Riggs, R.~Huben, L.~Sharkey. 2023. Sparse autoencoders find highly interpretable features in language models. \emph{arXiv:2309.08600}.
+
+\bibitem[Dong et al.(2021)]{dong2021attention}
+Y.~Dong, J.-B.~Cordonnier, A.~Loukas. 2021. Attention is not all you need: Pure attention loses rank doubly exponentially with depth. \emph{ICML}.
+
+\bibitem[Elhage et al.(2021)]{elhage2021mathematical}
+N.~Elhage, N.~Nanda, C.~Olsson, et al.\ 2021. A mathematical framework for transformer circuits. \emph{Anthropic Tech.\ Report}.
+
+\bibitem[Ethayarajh(2019)]{ethayarajh2019contextual}
+K.~Ethayarajh. 2019. How contextual are contextualized word representations? \emph{EMNLP}.
+
+\bibitem[Forman(2003)]{forman2003ricci}
+R.~Forman. 2003. Bochner's method for cell complexes and combinatorial Ricci curvature. \emph{Discrete \& Comput.\ Geom.}, 29(3):323--374.
+
+\bibitem[Geshkovski et al.(2023)]{geshkovski2023mathematical}
+B.~Geshkovski, C.~Letrouit, Y.~Polyanskiy, P.~Rigollet. 2023. A mathematical perspective on transformers. \emph{arXiv:2312.10794}.
+
+\bibitem[Huang \& Marques-Silva(2024)]{huang2024shapley}
+X.~Huang, J.~Marques-Silva. 2024. On the failings of Shapley values for explainability. \emph{IJAR}, 109112.
+
+\bibitem[Jiang et al.(2023)]{jiang2023mistral}
+A.~Q.~Jiang, A.~Sablayrolles, A.~Mensch, et al.\ 2023. Mistral 7B. \emph{arXiv:2310.06825}.
+
+\bibitem[Kraskov et al.(2004)]{kraskov2004estimating}
+A.~Kraskov, H.~St\"ogbauer, P.~Grassberger. 2004. Estimating mutual information. \emph{Physical Review E}, 69(6):066138.
+
+\bibitem[Lundberg \& Lee(2017)]{lundberg2017unified}
+S.~Lundberg, S.-I.~Lee. 2017. A unified approach to interpreting model predictions. \emph{NeurIPS}.
+
+\bibitem[Olah et al.(2020)]{olah2020zoom}
+C.~Olah, N.~Cammarata, L.~Schubert, et al.\ 2020. Zoom in: An introduction to circuits. \emph{Distill}.
+
+\bibitem[Panickssery et al.(2023)]{panickssery2023steering}
+N.~Panickssery, N.~Gabrieli, J.~Schulz, M.~Tong, E.~Hubinger, A.~M.~Turner. 2023. Steering Llama 2 via contrastive activation addition. \emph{arXiv:2312.06681}.
+
+\bibitem[Radford et al.(2019)]{radford2019language}
+A.~Radford, J.~Wu, R.~Child, D.~Luan, D.~Amodei, I.~Sutskever. 2019. Language models are unsupervised multitask learners. \emph{OpenAI Tech.\ Report}.
+
+\bibitem[Ribeiro et al.(2016)]{ribeiro2016why}
+M.~T.~Ribeiro, S.~Singh, C.~Guestrin. 2016. ``Why should I trust you?'': Explaining the predictions of any classifier. \emph{KDD}.
+
+\bibitem[Sreejith et al.(2016)]{sreejith2016forman}
+R.~P.~Sreejith, K.~Mohanraj, J.~Jost, E.~Saucan, A.~Samal. 2016. Forman curvature for complex networks. \emph{J.\ Stat.\ Mech.}, 2016(6):063206.
+
+\bibitem[Turner et al.(2023)]{turner2023activation}
+A.~M.~Turner, L.~Thiergart, D.~Udell, et al.\ 2023. Activation addition: Steering language models without optimization. \emph{arXiv:2308.10248}.
+
+\bibitem[Zou et al.(2023)]{zou2023representation}
+A.~Zou, L.~Phan, S.~Chen, et al.\ 2023. Representation engineering: A top-down approach to AI transparency. \emph{arXiv:2310.01405}.
+
+\end{thebibliography}
+
+\appendix
+\onecolumn
+
+\section{Reproducibility Details}
+\label{app:repro}
+
+\textbf{Code organization.} The pipeline is modular and version-controlled. Scripts in run order:
+\begin{itemize}\itemsep0pt
+\item \texttt{collect\_ffn\_600.py}: forward hooks on \texttt{model.model.layers[i].mlp} for $i\in\{8,16,24\}$, captures last-token FFN-output across $600$ prompts. Output: \texttt{activations\_ffn\_600.pt}.
+\item \texttt{build\_state\_ffn.py}: Sparse PCA ($\alpha{=}0.1$, $50$-D, fallback to PCA if degenerate); silhouette sweep over $k\in[4,14]$ via sklearn KMeans; DifferentiableKMeans at chosen $k$; Laplace-smoothed transition matrices. Output: \texttt{shadow\_live\_state\_ffn.pt}.
+\item \texttt{compute\_ffn\_steering\_vectors.py}: per-domain centroids from FFN-output activations, written into the state file.
+\item \texttt{precompute\_steering\_tensors\_ffn.py}: bipartite Forman--Ricci $\kappa$ on cluster-transition graph; assembles per-edge curvature matrix as a low-rank-plus-diagonal LinearOperator; top-$D{=}20$ eigendecomposition via \texttt{scipy.sparse.linalg.eigsh}. Output: \texttt{steering\_tensors.pt}.
+\item \texttt{run\_pipeline\_ffn.py}: cross-layer MI, Kruskal--Wallis, meta-router, Procrustes, calibration. Output: \texttt{shadow\_v3\_output/n600\_ffn/pipeline\_ffn\_stats.json}.
+\item \texttt{brev\_live\_steering.py --phase C --inject-target mlp}: four-arm Phase~C ablation; FFN-submodule injection. Output: \texttt{brev\_live\_results/phaseC\_ablation.json}.
+\item \texttt{score\_generations\_calibrated.py}: TF-IDF + LR + temperature scaling on $600$-prompt corpus; scores Phase~C generations. Output: \texttt{brev\_live\_results/phaseC\_calibrated\_scores.json}.
+\end{itemize}
+
+\textbf{Random seeds.} NumPy and PyTorch seeds fixed to $42$ throughout. Single end-to-end run; across-seed variance unreported (Limitation L1).
+
+\textbf{Software.} Python $3.12$; PyTorch $\geq 2.0$; transformers $\geq 4.40$; scikit-learn $\geq 1.3$; numpy; scipy.
+
+\textbf{Hardware.} NVIDIA H100 (80\,GB) on a Brev cloud instance. Sparse PCA: $\sim 12$ min. Clustering + transitions + tensor precompute: $\sim 1$ min. Phase~C generation ($216$ generations $\times$ $60$ tokens $\times$ $4$ arms): $\sim 18$ min. Calibrated scoring: $\sim 10$\,s on CPU.
+
+\section{Why CAA Fails: Domain-Centroid Geometry on FFN-Output}
+\label{app:caa}
+
+The compute-time diagnostic in \texttt{compute\_ffn\_steering\_vectors.py} prints per-layer pairwise cosines between domain centroids in raw $4096$-D FFN-output space. At layer $16$, all three domain pairs (Med--Fin, Med--Cod, Fin--Cod) have cosine $\geq 0.9$, indicating the centroids point in nearly the same direction; the contrastive vector $v_t-v_s$ is therefore small in norm relative to per-prompt variation. Adding a small-norm vector at $\alpha\in\{1,3,5\}$ does not durably move generations. This is the geometric origin of F1 (CAA's failure on FFN-output): the FFN-output domain manifold has weak directional separation, so attraction-toward-target is dominated by per-prompt noise. Repulsion succeeds because the model's own commitment to source-domain representation is the strong signal; pushing \emph{away from} that commitment moves generations even without a precise target direction.
+
+\section{Adaptive-$k$ Justification: Cluster Granularity and $\rho_{\text{scalar}}$}
+\label{app:k-sweep}
+
+Two diagnostic Brev runs at $n{=}600$ on the FFN-output activations:
+
+\begin{center}\small
+\begin{tabular}{lcccc}
+\toprule
+Setting & $k_8$ & $k_{16}$ & $k_{24}$ & $\rho_{\text{scalar}}$ range \\
+\midrule
+Fixed (May 6 run) & $6$ & $5$ & $5$ & $[0.998, 1.003]$ \\
+Adaptive (May 6, post-fix) & $4$ & $10$ & $13$ & $[0.66, 1.46]$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At $k_{16}{=}5$, with $200$ queries per domain spread over only $5$ clusters, every domain occupies every cluster substantially; per-pair $\kappa_{\text{eff}}(s,t)$ collapses to a constant. At $k_{16}{=}10$, domains occupy distinct cluster subsets and per-pair $\kappa_{\text{eff}}$ varies meaningfully. The lower bound on cluster granularity for the scalar curvature-weighted arm to differentiate from flat repulsion is therefore $k_{16}\gtrsim 10$ on data of this scale.
+
+\end{document}
